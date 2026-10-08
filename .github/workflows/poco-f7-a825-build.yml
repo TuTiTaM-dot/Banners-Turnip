@@ -1,0 +1,265 @@
+# Standalone driver build: contains the checked patch; publishes an artifact only.
+name: Build POCO F7 Adreno 825 ZIP
+'on':
+  workflow_dispatch: {}
+  push:
+    branches:
+    - codex/poco-f7-a825-build
+    paths:
+    - .github/workflows/poco-f7-a825-build.yml
+permissions:
+  contents: read
+concurrency:
+  group: poco-f7-a825-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  SOURCE_COMMIT: d8f6496ae30b0be18d36f3943c6f16e5c08b7f6c
+  MESA_COMMIT: 9ce7a2ef35ae1ab06e024860a0f247962ab11b95
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+    - name: Install build tools
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y git curl unzip zip patch ninja-build patchelf flex bison   glslang-tools ccache pkg-config clang lld llvm python3-pip binutils cmake
+        python3 -m pip install --break-system-packages 'meson>=1.5' mako pyyaml packaging
+        # Support both glslang executable names used by different Ubuntu package versions.
+        mkdir -p "$RUNNER_TEMP/turnip-bin"
+        if ! command -v glslang >/dev/null 2>&1; then
+          ln -s "$(command -v glslangValidator)" "$RUNNER_TEMP/turnip-bin/glslang"
+        fi
+        echo "$RUNNER_TEMP/turnip-bin" >> "$GITHUB_PATH"
+    - name: Fetch the tested repository base
+      run: |
+        set -euo pipefail
+        git init source
+        git -C source remote add origin https://github.com/TuTiTaM-dot/Banners-Turnip.git
+        git -C source fetch --depth=1 origin "$SOURCE_COMMIT"
+        git -C source checkout --detach FETCH_HEAD
+        test "$(git -C source rev-parse HEAD)" = "$SOURCE_COMMIT"
+    - name: Apply the POCO F7 patch
+      run: |
+        set -euo pipefail
+        python3 - <<'PY_PATCH'
+        from pathlib import Path
+        import base64, gzip, hashlib
+        encoded = """
+        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
+        """
+        patch = gzip.decompress(base64.b64decode(encoded))
+        assert hashlib.sha256(patch).hexdigest() == "4442cb07221506a2eb0d8f0822359a1cf29ab34eae2c50611db8d3e9ec664335", "patch checksum mismatch"
+        Path("poco-f7-adreno825.patch").write_bytes(patch)
+        PY_PATCH
+        git -C source apply --check ../poco-f7-adreno825.patch
+        git -C source apply ../poco-f7-adreno825.patch
+        git -C source diff --check
+    - name: Download Android NDK and pinned Mesa source
+      run: |
+        set -euo pipefail
+        mkdir -p source/turnip_workdir
+        curl --fail --location --retry 4 --connect-timeout 30   https://dl.google.com/android/repository/android-ndk-r29-linux.zip   --output "$RUNNER_TEMP/android-ndk-r29-linux.zip"
+        unzip -q "$RUNNER_TEMP/android-ndk-r29-linux.zip" -d source/turnip_workdir
+        rm "$RUNNER_TEMP/android-ndk-r29-linux.zip"
+        git init source/turnip_workdir/mesa
+        git -C source/turnip_workdir/mesa remote add origin https://gitlab.freedesktop.org/mesa/mesa.git
+        ok=0
+        for attempt in 1 2 3 4; do
+          if git -C source/turnip_workdir/mesa fetch --depth=1 origin "$MESA_COMMIT"; then ok=1; break; fi
+          sleep 10
+        done
+        test "$ok" = 1
+        git -C source/turnip_workdir/mesa checkout --detach FETCH_HEAD
+        test "$(git -C source/turnip_workdir/mesa rev-parse HEAD)" = "$MESA_COMMIT"
+    - name: Compile the A825 Android driver
+      working-directory: source
+      run: |
+        set -euo pipefail
+        export BUILD_VERSION="$GITHUB_RUN_NUMBER"
+        export BUILD_SUFFIX=A825
+        export SKIP_SOURCE_DOWNLOAD=1
+        export EXTRA_PATCH=patches/a8xx_gen8.patch
+        export EXTRA_SCRIPT=patches/a8xx_shared_mem.py:patches/a840v2.py:patches/a825.py
+        export META_NAME="Mesa Turnip POCO F7 Adreno 825 ($MESA_COMMIT)"
+        export META_DESC="Experimental POCO F7 / Snapdragon 8s Gen 4 / Adreno 825 driver. KGSL chip 0x44030000. Mesa Gen8 patches and verified A825 device configuration."
+        bash build_turnip.sh
+    - name: Verify and package the driver ZIP
+      working-directory: source
+      run: |
+        set -euo pipefail
+        python3 .github/scripts/verify_a825.py   --header turnip_workdir/mesa/build-android-aarch64/src/freedreno/common/freedreno_devices.h
+        mkdir -p dist
+        export INPUT_ZIP="turnip_workdir/mesa-turnip-main-A825-V${GITHUB_RUN_NUMBER}.zip"
+        export DRIVER_ZIP="dist/Turnip-POCO-F7-Adreno825-${MESA_COMMIT:0:10}.zip"
+        export META_NAME="Mesa Turnip POCO F7 Adreno 825 ($MESA_COMMIT)"
+        python3 - <<'PY_ZIP'
+        import json, os, zipfile
+        with zipfile.ZipFile(os.environ['INPUT_ZIP']) as source:
+            driver = source.read('libvulkan_freedreno.so')
+            meta = json.loads(source.read('meta.json'))
+        meta['packageVersion'] = os.environ['GITHUB_RUN_NUMBER']
+        meta['minApi'] = 34
+        with zipfile.ZipFile(os.environ['DRIVER_ZIP'], 'w', zipfile.ZIP_DEFLATED) as target:
+            target.writestr('libvulkan_freedreno.so', driver)
+            target.writestr('meta.json', json.dumps(meta, indent=2) + '\n')
+        PY_ZIP
+        python3 .github/scripts/verify_driver_zip.py --kind android   --zip "$DRIVER_ZIP" --variant a8xx --expect-name "$META_NAME"   --expect-package-version "$GITHUB_RUN_NUMBER" --report dist/verification.json
+        sha256sum "$DRIVER_ZIP" > "$DRIVER_ZIP.sha256"
+    - name: Upload the verified driver
+      uses: actions/upload-artifact@v4
+      with:
+        name: Turnip-POCO-F7-Adreno825
+        path: source/dist/
+        if-no-files-found: error
+        retention-days: 14
+    - name: Upload build logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: POCO-F7-build-logs
+        path: source/turnip_workdir/mesa/build-android-aarch64/meson-logs/
+        if-no-files-found: ignore
+        retention-days: 7
